@@ -1,6 +1,8 @@
 package com.example.AbiturBot.service;
 
 import com.example.AbiturBot.config.BotConfig;
+import com.example.AbiturBot.model.Faculty;
+import com.example.AbiturBot.model.University;
 import com.example.AbiturBot.model.User;
 import com.example.AbiturBot.repository.UserRepository;
 import com.vdurmont.emoji.EmojiParser;
@@ -14,36 +16,36 @@ import org.telegram.telegrambots.meta.api.objects.Chat;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
-import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScope;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboard;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.ReplyKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
-import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.KeyboardRow;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Component
 @Slf4j
 public class TelegramBot extends TelegramLongPollingBot {
 
     final BotConfig botConfig;
+    private final UniversityService universityService;
+    private final KeyboardServce keyboardServce;
+    private final MailSenderService mailSenderService;
+    String callBackData = null;
 
     @Autowired
     UserRepository userRepository;
 
-    public TelegramBot(BotConfig botConfig) {
+    public TelegramBot(BotConfig botConfig, UniversityService universityService, KeyboardServce keyboardServce, MailSenderService mailSenderService) {
         this.botConfig = botConfig;
+        this.universityService = universityService;
+        this.keyboardServce = keyboardServce;
+        this.mailSenderService = mailSenderService;
         List<BotCommand> listOfCommands = new ArrayList<>();
-        listOfCommands.add(new BotCommand("/start", "get a welcome message"));
-        listOfCommands.add(new BotCommand("/mydata", "get your data stored"));
-        listOfCommands.add(new BotCommand("/deletedata", "delete my data"));
-        listOfCommands.add(new BotCommand("/help", "info"));
-        listOfCommands.add(new BotCommand("/settings", "set your preferences"));
+        listOfCommands.add(new BotCommand("/start", "Приветственное сообщение и начало работы"));
         try {
             this.execute(new SetMyCommands(listOfCommands, new BotCommandScopeDefault(), null));
         }
@@ -67,22 +69,42 @@ public class TelegramBot extends TelegramLongPollingBot {
         if (update.hasMessage() && update.getMessage().hasText()) {
             String messageText = update.getMessage().getText();
             long chatId = update.getMessage().getChatId();
+            SendMessage message = new SendMessage();
 
             switch (messageText) {
                 case "/start":
                     startCommandReceived(chatId, update.getMessage().getChat().getFirstName());
                     registerUser(update.getMessage());
                     break;
-                case "/help":
-                    listUniversity(chatId);
+                case "Университеты Республики Беларусь":
+                    listUniversityButton(chatId, message);
+                    executeMessage(message);
                     break;
-                default: sendMessage(chatId, "Sorry, command was not recognized");
+                case "Пройти анкетирование":
+                    //pool(chatId);
+                    break;
+                case "Факультеты":
+                    listFacultiesButton(chatId, message, callBackData);
+                    break;
+                case "Отправить сообщение на почту":
+                    mailSenderService.sendEmail(1, "Привет", "cixin61181@glumark.com");
+                    break;
+                default:
+                    sendMessage(chatId, "Sorry, command was not recognized");
             }
+        } else if (update.hasCallbackQuery()) {
+            long chatId = update.getCallbackQuery().getMessage().getChatId();
+            SendMessage message = new SendMessage();
+            message.setText("Хороший выбор!");
+            message.setChatId(String.valueOf(chatId));
+            callBackData = update.getCallbackQuery().getData();
+            // Изменяем клавиатуру в зависимости от нажатой кнопки
+            keyboardServce.universityKeyBoard(message);
+            executeMessage(message);
         }
     }
 
     private void registerUser(Message msg) {
-
         if (userRepository.findById(msg.getChatId()).isEmpty()) {
             long chatId = msg.getChatId();
             Chat chat = msg.getChat();
@@ -101,7 +123,7 @@ public class TelegramBot extends TelegramLongPollingBot {
     }
 
     private void startCommandReceived(long chatId, String name) {
-        String answer = EmojiParser.parseToUnicode("Hi, " + name + ", nice to meet you!" + " :blush: ");
+        String answer = EmojiParser.parseToUnicode("Привет, " + name + ", рад познакомиться!" + " :blush: ");
         log.info("Replied to user " + name);
         sendMessage(chatId, answer);
     }
@@ -111,27 +133,7 @@ public class TelegramBot extends TelegramLongPollingBot {
         message.setChatId(String.valueOf(chatId));
         message.setText(textToSend);
 
-        ReplyKeyboardMarkup keyboardMarkup = new ReplyKeyboardMarkup();
-
-        List<KeyboardRow> keyboardRows = new ArrayList<>();
-
-        KeyboardRow row = new KeyboardRow();
-
-        row.add("вузы");
-        row.add("пройти опрос");
-        
-        keyboardRows.add(row);
-        
-        row = new KeyboardRow();
-        row.add("избранное");
-        row.add("очистить избранное");
-
-        keyboardRows.add(row);
-
-        keyboardMarkup.setKeyboard(keyboardRows);
-
-        message.setReplyMarkup(keyboardMarkup);
-
+        keyboardServce.startKeybord(message);
 
         try{
             execute(message);
@@ -141,37 +143,60 @@ public class TelegramBot extends TelegramLongPollingBot {
         }
     }
 
-    private void listUniversity(long chatId ) {
+    private void listUniversityButton(long chatId, SendMessage message) {
 
-        SendMessage message = new SendMessage();
         message.setChatId(String.valueOf(chatId));
-        message.setText("Список вузов");
+        message.setText("Cписок университетов");
+        List<University> universityList = universityService.getAll();
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        InlineKeyboardMarkup markupInline = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rowsInline = new ArrayList<>();
-        List<InlineKeyboardButton> rowLine = new ArrayList<>();
-        var yesButton = new InlineKeyboardButton();
+        for (int i = 0; i < universityList.size(); i++) {
+            List<InlineKeyboardButton> row1 = new ArrayList<>();
+            InlineKeyboardButton but = new InlineKeyboardButton();
+            but.setText(universityList.get(i).getName());
+            but.setCallbackData(String.valueOf(universityList.get(i).getId()));
+            row1.add(but);
+            rows.add(row1);
 
-        yesButton.setText("Yes");
-        yesButton.setCallbackData("YES_BUTTON");
+            inlineKeyboardMarkup.setKeyboard(rows);
+        }
+        message.setReplyMarkup(inlineKeyboardMarkup);
+    }
 
-        var noButton = new InlineKeyboardButton();
+    private void listFacultiesButton(long chatId, SendMessage message, String callBackData) {
 
-        noButton.setText("No");
-        noButton.setCallbackData("NO_BUTTON");
+        message.setChatId(String.valueOf(chatId));
+        message.setText("Держи список факультетов");
+        University university = universityService.universityById(Long.parseLong(callBackData));
+        List<Faculty> faculties = university.getFaculties().stream().distinct().collect(Collectors.toList());
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        InlineKeyboardMarkup inlineKeyboardMarkup = new InlineKeyboardMarkup();
 
-        rowLine.add(yesButton);
-        rowLine.add(noButton);
+        for (int i = 0; i < faculties.size(); i++) {
+            List<InlineKeyboardButton> row1 = new ArrayList<>();
+            InlineKeyboardButton but = new InlineKeyboardButton();
+            but.setText(faculties.get(i).getName());
+            but.setCallbackData(String.valueOf(faculties.get(i).getId()));
+            row1.add(but);
+            rows.add(row1);
 
-        rowsInline.add(rowLine);
+            inlineKeyboardMarkup.setKeyboard(rows);
+        }
+        message.setReplyMarkup(inlineKeyboardMarkup);
+        executeMessage(message);
+    }
 
-        markupInline.setKeyboard(rowsInline);
-        message.setReplyMarkup(markupInline);
+    public void sendMessageToEmail(){
 
-        try {
+    }
+
+    public void executeMessage(SendMessage message) {
+        try{
             execute(message);
-        } catch (TelegramApiException e) {
-            log.error(e.getMessage());
+        }
+        catch (TelegramApiException e) {
+            log.error("Error occured: " + e.getMessage());
         }
     }
 }
